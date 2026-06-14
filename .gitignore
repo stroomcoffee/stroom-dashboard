@@ -1,0 +1,6 @@
+# .gitignore
+stroom_inventory.duckdb
+*.duckdb
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
