@@ -28,7 +28,8 @@ def show():
     df_stok = run_query("""
         SELECT ingredient_name, unit, category,
                stok_final, po_in_stock, adj_actual_stock,
-               adjustment, adj_date, po_date, order_no, stok_source
+               adjustment, adj_date, po_date, order_no, stok_source,
+               po_after_adj, konsumsi_after_adj
         FROM v_stok_final
         ORDER BY stok_final ASC NULLS FIRST
     """)
@@ -107,32 +108,32 @@ def show():
         return "✏️ adj" if val == "adjusted" else "📦 po"
 
     df_display = df_stok.copy()
-    df_display["Status"]        = df_display["stok_final"].apply(stock_icon)
-    df_display["Sumber"]        = df_display["stok_source"].apply(source_badge)
-    df_display["Stok Final"]    = df_display["stok_final"].apply(lambda x: fmt_number(x, 2))
-    df_display["Stok PO"]       = df_display["po_in_stock"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) else "-")
-    df_display["Stok Adj"]      = df_display["adj_actual_stock"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) else "-")
-    df_display["Tgl Adj"]       = pd.to_datetime(df_display["adj_date"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("-")
-    df_display["Tgl PO"]        = pd.to_datetime(df_display["po_date"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("-")
+    df_display["Status"]         = df_display["stok_final"].apply(stock_icon)
+    df_display["Sumber"]         = df_display["stok_source"].apply(source_badge)
+    df_display["Stok Adj"]       = df_display["adj_actual_stock"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) else "-")
+    df_display["Tgl Adj"]        = pd.to_datetime(df_display["adj_date"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("-")
+    df_display["PO Setelah Adj"] = df_display["po_after_adj"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) and x > 0 else "-")
+    df_display["Konsumsi"]       = df_display["konsumsi_after_adj"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) and x > 0 else "-")
+    df_display["Stok Real"]      = df_display["stok_final"].apply(lambda x: fmt_number(x, 2))
+    df_display["Tgl PO"]         = pd.to_datetime(df_display["po_date"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("-")
 
     st.dataframe(
         df_display[[
-            "Status", "Sumber", "ingredient_name", "Stok Final", "unit",
-            "category", "Stok Adj", "Tgl Adj", "Stok PO", "Tgl PO", "order_no"
+            "Status", "Sumber", "ingredient_name", "unit", "category",
+            "Stok Adj", "Tgl Adj", "PO Setelah Adj", "Konsumsi", "Stok Real"
         ]].rename(columns={
             "ingredient_name": "Nama Bahan",
             "unit": "Satuan",
             "category": "Kategori",
-            "order_no": "No. PO"
         }),
         use_container_width=True, hide_index=True, height=550
     )
 
-    st.caption("✏️ adj = stok dari Inventory Adjustment | 📦 po = stok dari Purchase Order")
+    st.caption("Stok Real = Stok Adjustment + PO Setelah Adj − Konsumsi Penjualan | ✏️ adj = dari Adjustment | 📦 po = dari PO")
 
-    csv_data = df_display[["ingredient_name","stok_final","unit","category","stok_source","adj_date","po_date"]].to_csv(index=False).encode("utf-8")
+    csv_data = df_display[["ingredient_name","unit","category","stok_source","Stok Adj","Tgl Adj","PO Setelah Adj","Konsumsi","Stok Real"]].to_csv(index=False).encode("utf-8")
     st.download_button("Download data stok (CSV)", data=csv_data,
-                       file_name="stok_bahan_stroom.csv", mime="text/csv")
+                       file_name="stok_real_stroom.csv", mime="text/csv")
 
     st.divider()
 
