@@ -130,3 +130,125 @@ def show():
     csv_data = df_display[["ingredient_name","stok_final","unit","category","stok_source","adj_date","po_date"]].to_csv(index=False).encode("utf-8")
     st.download_button("Download data stok (CSV)", data=csv_data,
                        file_name="stok_bahan_stroom.csv", mime="text/csv")
+
+    st.divider()
+
+    # ── Analisis Konsumsi Bahan per Periode ─────────────────────
+    st.subheader("Pergerakan Konsumsi Bahan")
+    st.caption("Estimasi konsumsi bahan berdasarkan penjualan × resep dalam periode tertentu")
+
+    import datetime
+    import plotly.graph_objects as go
+    from utils.style import ACCENT, ACCENT2, WARN, DANGER, BORDER, TEXT, TEXT_MUTED, BG3
+
+    # ── Filter tanggal & bahan ───────────────────────────────────
+    today = datetime.date.today()
+    col_k1, col_k2, col_k3 = st.columns([2, 2, 2])
+    with col_k1:
+        k_range = st.date_input(
+            "Rentang tanggal konsumsi",
+            value=(today.replace(day=1), today),
+            key="konsumsi_date_range"
+        )
+    with col_k2:
+        # Ambil daftar bahan yang ada di resep
+        df_bahan_list = run_query("""
+            SELECT DISTINCT r.ingredient_name
+            FROM fact_recipe r
+            ORDER BY r.ingredient_name
+        """)
+        bahan_options = df_bahan_list["ingredient_name"].tolist() if not df_bahan_list.empty else []
+        selected_bahan = st.multiselect(
+            "Pilih bahan (max 5)",
+            options=bahan_options,
+            default=bahan_options[:3] if len(bahan_options) >= 3 else bahan_options,
+            max_selections=5,
+            key="konsumsi_bahan_select"
+        )
+    with col_k3:
+        tampilan = st.radio(
+            "Tampilan",
+            ["Per hari", "Per minggu"],
+            horizontal=True,
+            key="konsumsi_tampilan"
+        )
+
+    if len(k_range) == 2 and selected_bahan:
+        k_start, k_end = k_range
+
+        # Query konsumsi: qty terjual × qty bahan di resep
+        bahan_in = "'" + "','".join(selected_bahan) + "'"
+
+        df_konsumsi = run_query(f"""
+            SELECT
+                s.sale_date,
+                r.ingredient_name,
+                r.ingredient_unit as unit,
+                SUM(s.quantity * r.ingredient_qty) as total_konsumsi
+            FROM fact_sales_detail s
+            JOIN fact_recipe r ON s.item_name = r.item_name
+            WHERE s.sale_date BETWEEN ? AND ?
+              AND r.ingredient_name IN ({bahan_in})
+              AND s.quantity > 0
+              AND r.ingredient_qty > 0
+            GROUP BY s.sale_date, r.ingredient_name, r.ingredient_unit
+            ORDER BY s.sale_date
+        """, [k_start, k_end])
+
+        if not df_konsumsi.empty:
+            df_konsumsi["sale_date"] = pd.to_datetime(df_konsumsi["sale_date"])
+
+            # Grouping per minggu jika dipilih
+            if tampilan == "Per minggu":
+                df_konsumsi["periode"] = df_konsumsi["sale_date"].dt.to_period("W").apply(
+                    lambda r: r.start_time.strftime("%d/%m")
+                )
+                df_plot = df_konsumsi.groupby(["periode", "ingredient_name", "unit"])["total_konsumsi"].sum().reset_index()
+                x_col = "periode"
+            else:
+                df_konsumsi["periode"] = df_konsumsi["sale_date"].dt.strftime("%d/%m")
+                df_plot = df_konsumsi.groupby(["periode", "ingredient_name", "unit"])["total_konsumsi"].sum().reset_index()
+                x_col = "periode"
+
+            # Warna per bahan
+            warna_list = [ACCENT, ACCENT2, WARN, DANGER, "#A78BFA"]
+
+            fig_k = go.Figure()
+            for i, bahan in enumerate(selected_bahan):
+                df_b = df_plot[df_plot["ingredient_name"] == bahan]
+                if df_b.empty:
+                    continue
+                unit = df_b["unit"].iloc[0] if not df_b.empty else ""
+                warna = warna_list[i % len(warna_list)]
+                fig_k.add_trace(go.Scatter(
+                    x=df_b[x_col],
+                    y=df_b["total_konsumsi"],
+                    name=f"{bahan} ({unit})",
+                    mode="lines+markers",
+                    line=dict(color=warna, width=2.5),
+                    marker=dict(size=6, color=warna),
+                    hovertemplate=f"<b>{bahan}</b><br>%{{x}}<br>Konsumsi: %{{y:,.1f}} {unit}<extra></extra>"
+                ))
+
+            fig_k.update_layout(
+                **PLOTLY_DARK,
+                height=380,
+                xaxis=dark_xaxis(title="Tanggal"),
+                yaxis=dark_yaxis(title="Jumlah Konsumsi"),
+                legend=dict(orientation="h", y=1.12, x=0, bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT)),
+                margin=dict(l=0, r=0, t=40, b=0)
+            )
+            st.plotly_chart(fig_k, use_container_width=True)
+
+            # ── Tabel ringkasan total konsumsi ───────────────────
+            st.markdown("**Total konsumsi per bahan dalam periode ini:**")
+            df_summary = df_plot.groupby(["ingredient_name", "unit"])["total_konsumsi"].sum().reset_index()
+            df_summary.columns = ["Nama Bahan", "Satuan", "Total Konsumsi"]
+            df_summary["Total Konsumsi"] = df_summary["Total Konsumsi"].apply(lambda x: f"{x:,.1f}")
+            df_summary = df_summary.sort_values("Nama Bahan")
+            st.dataframe(df_summary, use_container_width=True, hide_index=True)
+
+        else:
+            st.info("Tidak ada data konsumsi untuk bahan dan periode yang dipilih. Pastikan bahan tersebut ada di data resep (Resep & BOM).")
+    elif not selected_bahan:
+        st.info("Pilih minimal 1 bahan untuk melihat pergerakan konsumsi.")
