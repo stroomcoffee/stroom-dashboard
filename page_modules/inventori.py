@@ -10,7 +10,36 @@ def show():
     st.title("Inventori Bahan")
     st.caption("Status stok terkini — adjustment diutamakan di atas data PO jika tersedia")
 
-    # ── Filter ──────────────────────────────────────────────────
+    import datetime
+
+    # ── Filter tanggal ───────────────────────────────────────────
+    today = datetime.date.today()
+    df_dates = run_query("SELECT MIN(CAST(po_date AS VARCHAR)) as mn, MAX(CAST(po_date AS VARCHAR)) as mx FROM fact_purchase_order")
+    min_po = datetime.date.fromisoformat(df_dates["mn"].iloc[0][:10]) if not df_dates.empty and df_dates["mn"].iloc[0] else today.replace(day=1)
+    max_po = datetime.date.fromisoformat(df_dates["mx"].iloc[0][:10]) if not df_dates.empty and df_dates["mx"].iloc[0] else today
+
+    col_tgl1, col_tgl2, col_tgl3 = st.columns([3, 1, 1])
+    with col_tgl1:
+        inv_range = st.date_input(
+            "Rentang tanggal",
+            value=(min_po, max_po),
+            min_value=min_po, max_value=max_po,
+            key="inv_date_range"
+        )
+    with col_tgl2:
+        st.write("")
+        if st.button("Bulan ini", use_container_width=True, key="inv_bulan_ini"):
+            st.session_state["inv_date_range"] = (today.replace(day=1), today)
+            st.rerun()
+    with col_tgl3:
+        st.write("")
+        if st.button("Semua data", use_container_width=True, key="inv_semua"):
+            st.session_state["inv_date_range"] = (min_po, max_po)
+            st.rerun()
+
+    i_start, i_end = (inv_range if len(inv_range) == 2 else (min_po, max_po))
+
+    # ── Filter bahan ─────────────────────────────────────────────
     col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
     with col_f1:
         search = st.text_input("Cari bahan", placeholder="Ketik nama bahan...")
@@ -21,14 +50,50 @@ def show():
     with col_f3:
         stock_filter = st.selectbox("Filter stok", ["Semua", "Stok rendah (<1000)", "Stok negatif", "Stok normal"])
 
-    # ── Query stok final dari view ───────────────────────────────
+    # ── Query stok per periode (Opsi B) ─────────────────────────
+    # Stok bersih = PO masuk - estimasi konsumsi dalam periode
     df_stok = run_query("""
-        SELECT ingredient_name, unit, category,
-               stok_final, po_in_stock, adj_actual_stock,
-               adjustment, adj_date, po_date, order_no, stok_source
-        FROM v_stok_final
+        WITH po_masuk AS (
+            SELECT ingredient_name, unit, category,
+                   SUM(order_qty) as stok_masuk
+            FROM fact_purchase_order
+            WHERE po_date BETWEEN ? AND ?
+              AND status = 'Completed'
+            GROUP BY ingredient_name, unit, category
+        ),
+        konsumsi AS (
+            SELECT r.ingredient_name,
+                   SUM(s.quantity * r.ingredient_qty) as total_konsumsi
+            FROM fact_sales_detail s
+            JOIN fact_recipe r ON LOWER(TRIM(s.item_name)) = LOWER(TRIM(r.item_name))
+            WHERE s.sale_date BETWEEN ? AND ?
+              AND s.quantity > 0 AND r.ingredient_qty > 0
+            GROUP BY r.ingredient_name
+        )
+        SELECT
+            COALESCE(p.ingredient_name, k.ingredient_name) as ingredient_name,
+            COALESCE(p.unit, '') as unit,
+            COALESCE(p.category, '') as category,
+            COALESCE(p.stok_masuk, 0) as po_in_stock,
+            COALESCE(k.total_konsumsi, 0) as estimasi_konsumsi,
+            COALESCE(p.stok_masuk, 0) - COALESCE(k.total_konsumsi, 0) as stok_final,
+            NULL as adj_actual_stock,
+            NULL as adjustment,
+            NULL as adj_date,
+            NULL as order_no,
+            'periode' as stok_source
+        FROM po_masuk p
+        FULL OUTER JOIN konsumsi k ON LOWER(TRIM(p.ingredient_name)) = LOWER(TRIM(k.ingredient_name))
         ORDER BY stok_final ASC NULLS FIRST
-    """)
+    """, [i_start, i_end, i_start, i_end])
+
+    # Info periode
+    st.markdown(
+        f'<div style="font-size:0.78rem;color:#7A7F99;margin:-4px 0 12px 0">'
+        f'Menampilkan pergerakan stok periode <b>{i_start.strftime("%d/%m/%Y")}</b> s/d <b>{i_end.strftime("%d/%m/%Y")}</b> '
+        f'— PO masuk dikurangi estimasi konsumsi berdasarkan resep</div>',
+        unsafe_allow_html=True
+    )
 
     # Apply filters
     if search:
@@ -48,24 +113,16 @@ def show():
         st.metric("Total Jenis Bahan", len(df_stok))
     with c2:
         neg = len(df_stok[df_stok["stok_final"] < 0])
-        st.metric("Stok Negatif 🔴", neg)
+        st.metric("Stok Defisit 🔴", neg)
     with c3:
         low = len(df_stok[(df_stok["stok_final"] >= 0) & (df_stok["stok_final"] < 500)])
         st.metric("Stok Rendah 🟡", low)
     with c4:
         normal = len(df_stok[df_stok["stok_final"] >= 1000])
-        st.metric("Stok Normal 🟢", normal)
+        st.metric("Stok Surplus 🟢", normal)
     with c5:
-        adj_count = len(df_stok[df_stok["stok_source"] == "adjusted"])
-        st.metric("Sudah di-adjust", adj_count)
-
-    # ── Info adjustment ──────────────────────────────────────────
-    if (df_stok["stok_source"] == "adjusted").any():
-        st.info(
-            f"⚡ **{adj_count} bahan** menggunakan stok dari **Inventory Adjustment** (bukan PO). "
-            "Kolom sumber menunjukkan 'adjusted' atau 'po_only'.",
-            icon="ℹ️"
-        )
+        total_po = df_stok["po_in_stock"].sum()
+        st.metric("Total PO Masuk", f"{total_po:,.0f}")
 
     st.divider()
 
@@ -104,32 +161,31 @@ def show():
         return "✏️ adj" if val == "adjusted" else "📦 po"
 
     df_display = df_stok.copy()
-    df_display["Status"]        = df_display["stok_final"].apply(stock_icon)
-    df_display["Sumber"]        = df_display["stok_source"].apply(source_badge)
-    df_display["Stok Final"]    = df_display["stok_final"].apply(lambda x: fmt_number(x, 2))
-    df_display["Stok PO"]       = df_display["po_in_stock"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) else "-")
-    df_display["Stok Adj"]      = df_display["adj_actual_stock"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) else "-")
-    df_display["Tgl Adj"]       = pd.to_datetime(df_display["adj_date"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("-")
-    df_display["Tgl PO"]        = pd.to_datetime(df_display["po_date"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("-")
+    df_display["Status"]             = df_display["stok_final"].apply(stock_icon)
+    df_display["PO Masuk"]           = df_display["po_in_stock"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) else "-")
+    df_display["Estimasi Konsumsi"]  = df_display["estimasi_konsumsi"].apply(lambda x: fmt_number(x, 2) if pd.notna(x) else "-")
+    df_display["Stok Bersih"]        = df_display["stok_final"].apply(lambda x: fmt_number(x, 2))
 
     st.dataframe(
         df_display[[
-            "Status", "Sumber", "ingredient_name", "Stok Final", "unit",
-            "category", "Stok Adj", "Tgl Adj", "Stok PO", "Tgl PO", "order_no"
+            "Status", "ingredient_name", "unit", "category",
+            "PO Masuk", "Estimasi Konsumsi", "Stok Bersih"
         ]].rename(columns={
             "ingredient_name": "Nama Bahan",
             "unit": "Satuan",
             "category": "Kategori",
-            "order_no": "No. PO"
         }),
         use_container_width=True, hide_index=True, height=550
     )
 
-    st.caption("✏️ adj = stok dari Inventory Adjustment | 📦 po = stok dari Purchase Order")
+    st.caption("Stok Bersih = PO Masuk − Estimasi Konsumsi (berdasarkan penjualan × resep)")
 
-    csv_data = df_display[["ingredient_name","stok_final","unit","category","stok_source","adj_date","po_date"]].to_csv(index=False).encode("utf-8")
+    csv_data = df_display[["ingredient_name","unit","category","po_in_stock","estimasi_konsumsi","stok_final"]].rename(columns={
+        "ingredient_name":"Nama Bahan","unit":"Satuan","category":"Kategori",
+        "po_in_stock":"PO Masuk","estimasi_konsumsi":"Estimasi Konsumsi","stok_final":"Stok Bersih"
+    }).to_csv(index=False).encode("utf-8")
     st.download_button("Download data stok (CSV)", data=csv_data,
-                       file_name="stok_bahan_stroom.csv", mime="text/csv")
+                       file_name=f"stok_bahan_{i_start}_{i_end}.csv", mime="text/csv")
 
     st.divider()
 
