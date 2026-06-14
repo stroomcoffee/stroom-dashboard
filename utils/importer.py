@@ -90,6 +90,9 @@ def _clean_recipes(df: pd.DataFrame) -> pd.DataFrame:
     df["stock_alert"] = df["Ingredient Stock Alert"].fillna("").str.strip()
     df = df[df["item_name"] != ""]
     df = df[df["ingredient_name"] != ""]
+    # Hapus duplikat: jika 1 menu punya bahan sama lebih dari sekali,
+    # ambil baris terakhir (versi resep terbaru)
+    df = df.drop_duplicates(subset=["item_name", "ingredient_name"], keep="last")
     return df
 
 
