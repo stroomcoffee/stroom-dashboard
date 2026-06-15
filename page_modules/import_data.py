@@ -115,6 +115,18 @@ def show():
 
             if all_success:
                 st.success("Semua file berhasil diimport! Data lama di luar rentang file tetap aman.")
+                # Auto-upload ke Google Drive agar data permanen di cloud
+                try:
+                    from utils.gdrive_loader import upload_to_gdrive
+                    import streamlit as st
+                    with st.spinner("☁️ Menyimpan database ke Google Drive..."):
+                        ok = upload_to_gdrive()
+                    if ok:
+                        st.success("☁️ Database berhasil disimpan ke Google Drive!")
+                    else:
+                        st.info("ℹ️ Mode lokal — database tidak di-sync ke Google Drive.")
+                except Exception as e:
+                    st.info(f"ℹ️ Upload GDrive dilewati: {e}")
                 st.balloons()
             else:
                 st.warning("Beberapa file gagal diimport. Cek pesan error di atas.")

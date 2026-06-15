@@ -3,4 +3,6 @@ duckdb>=0.10.0
 pandas>=2.0.0
 plotly>=5.18.0
 reportlab>=4.0.0
-requests
+requests>=2.31.0
+PyJWT>=2.8.0
+cryptography>=41.0.0
