@@ -4,3 +4,8 @@ stroom_inventory.duckdb
 __pycache__/
 *.pyc
 .streamlit/secrets.toml
+
+echo "*.json" >> .gitignore
+echo "desktop.ini" >> .gitignore
+echo ".tmp.drivedownload/" >> .gitignore
+echo ".tmp.driveupload/" >> .gitignore
