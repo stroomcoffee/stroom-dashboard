@@ -118,7 +118,6 @@ def show():
                 # Auto-upload ke Google Drive agar data permanen di cloud
                 try:
                     from utils.gdrive_loader import upload_to_gdrive
-                    import streamlit as st
                     with st.spinner("☁️ Menyimpan database ke Google Drive..."):
                         ok = upload_to_gdrive()
                     if ok:
