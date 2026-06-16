@@ -496,29 +496,46 @@ def show():
 
     with col_po:
         st.markdown('<p class="dash-card-title">Ringkasan Purchase Order</p>', unsafe_allow_html=True)
-        # FIX: filter berdasarkan po_date
+        # Hanya Completed, dibagi BAR dan KITCHEN
         df_po_sum = run_query("""
-            SELECT status, COUNT(DISTINCT order_no) as jml_po, SUM(total_cost) as nilai
+            SELECT 
+                COALESCE(category, 'Lainnya') as category,
+                COUNT(DISTINCT order_no) as jml_po,
+                SUM(total_cost) as nilai
             FROM fact_purchase_order
             WHERE po_date BETWEEN ? AND ?
-            GROUP BY status
+              AND status = 'Completed'
+            GROUP BY category
+            ORDER BY category
         """, [d_start, d_end])
+
         if not df_po_sum.empty:
             total_po_val = df_po_sum["nilai"].sum()
+            total_po_jml = df_po_sum["jml_po"].sum()
             st.markdown(
                 f'<div style="font-size:1.5rem;font-weight:700;color:{ACCENT};letter-spacing:-0.02em">'
                 f'{fmt_rupiah(total_po_val)}</div>'
-                f'<div style="font-size:0.72rem;color:{TEXT_MUTED};margin-bottom:14px">Total nilai PO</div>',
+                f'<div style="font-size:0.72rem;color:{TEXT_MUTED};margin-bottom:6px">'
+                f'Total nilai PO Completed ({int(total_po_jml)} PO)</div>',
                 unsafe_allow_html=True
             )
+            # Warna per kategori
+            cat_colors = {"BAR": "#3B82F6", "KITCHEN": "#F97316", "Lainnya": ACCENT}
+            cat_icons  = {"BAR": "🍹", "KITCHEN": "🍳", "Lainnya": "📦"}
             for _, row in df_po_sum.iterrows():
-                badge = "badge-success" if row["status"] == "Completed" else "badge-warn"
+                cat   = row["category"]
+                color = cat_colors.get(cat, ACCENT)
+                icon  = cat_icons.get(cat, "📦")
+                pct   = (row["nilai"] / total_po_val * 100) if total_po_val > 0 else 0
                 st.markdown(
-                    f'<div style="display:flex;justify-content:space-between;align-items:center;'
-                    f'padding:8px 0;border-bottom:1px solid {BORDER};font-size:0.82rem">'
-                    f'<span class="{badge}">{row["status"]}</span>'
-                    f'<span style="color:{TEXT_MUTED}">{int(row["jml_po"])} PO</span>'
-                    f'<span style="color:{TEXT};font-weight:600">{fmt_rupiah(row["nilai"])}</span></div>',
+                    f'<div style="padding:8px 0;border-bottom:1px solid {BORDER}">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:0.82rem;margin-bottom:4px">'
+                    f'<span style="color:{color};font-weight:700">{icon} {cat}</span>'
+                    f'<span style="color:{TEXT_MUTED};font-size:0.75rem">{int(row["jml_po"])} PO</span>'
+                    f'<span style="color:{TEXT};font-weight:600">{fmt_rupiah(row["nilai"])}</span></div>'
+                    f'<div style="height:4px;background:{BG3};border-radius:2px">'
+                    f'<div style="width:{pct:.1f}%;height:4px;background:{color};border-radius:2px"></div>'
+                    f'</div></div>',
                     unsafe_allow_html=True
                 )
 
