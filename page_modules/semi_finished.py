@@ -4,9 +4,6 @@ from utils.database import run_query, get_connection
 from utils.style import BORDER, TEXT, TEXT_MUTED, ACCENT, ACCENT2, BG3
 
 
-# Daftar Semi-Finished Ingredient yang teridentifikasi dari Moka
-# (Recipes > Semi-Finished Ingredient). Dipakai sebagai pilihan default
-# di dropdown, tapi user tetap bisa ketik nama baru.
 KNOWN_SEMI_FINISHED = [
     "Bumbu Base XO", "Sambal Base", "Prepared Katsu", "Prepared Presto Iga",
     "Prepared Dry Rubbed", "Salad Base", "Base Iga Bakar", "Base Kuah Soto Betawi",
@@ -18,11 +15,34 @@ KNOWN_SEMI_FINISHED = [
 UNIT_OPTIONS = ["gram (g)", "kilogram (kg)", "millilitre (ml)", "litre (l)", "pieces (pcs)"]
 
 
-def _next_sf_id():
-    con = get_connection()
-    val = con.execute("SELECT nextval('seq_sf')").fetchone()[0]
-    con.close()
-    return val
+@st.cache_data(ttl=300)
+def _get_raw_ingredient_list():
+    """
+    Ambil daftar nama bahan mentah yang benar-benar ada di Moka,
+    gabungan dari PO dan Adjustment, supaya nama yang dipilih
+    selalu konsisten dengan tagging yang sudah ada.
+    """
+    df = run_query("""
+        SELECT DISTINCT ingredient_name FROM fact_purchase_order
+        UNION
+        SELECT DISTINCT ingredient_name FROM fact_adjustment
+        ORDER BY ingredient_name
+    """)
+    return df["ingredient_name"].dropna().tolist() if not df.empty else []
+
+
+@st.cache_data(ttl=300)
+def _get_unit_for_ingredient(ingredient_name: str):
+    """Ambil satuan default bahan tersebut dari data PO/Adjustment terakhir."""
+    df = run_query("""
+        SELECT unit FROM fact_purchase_order WHERE ingredient_name = ?
+        UNION ALL
+        SELECT unit FROM fact_adjustment WHERE ingredient_name = ?
+        LIMIT 1
+    """, [ingredient_name, ingredient_name])
+    if not df.empty:
+        return df["unit"].iloc[0]
+    return "gram (g)"
 
 
 def show():
@@ -33,9 +53,14 @@ def show():
         "mentahnya tetap ter-track otomatis lewat menu yang memakainya."
     )
 
+    raw_ingredients = _get_raw_ingredient_list()
+
+    if not raw_ingredients:
+        st.warning("Belum ada data bahan mentah di Purchase Order / Adjustment. Import data tersebut dulu sebelum membuat resep turunan.")
+        return
+
     st.divider()
 
-    # ── Form tambah / edit resep turunan ──────────────────────────
     st.subheader("Tambah resep turunan")
 
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -59,20 +84,33 @@ def show():
         batch_unit = st.selectbox("Satuan hasil", UNIT_OPTIONS, key="sf_batch_unit")
 
     st.markdown("**Bahan mentah yang dipakai untuk 1 batch ini:**")
+    st.caption("Pilih dari daftar bahan yang sudah tertagging di Moka (PO/Adjustment) agar nama selalu konsisten.")
 
-    # Session state untuk baris bahan dinamis
     if "sf_rows" not in st.session_state:
         st.session_state["sf_rows"] = [{"name": "", "qty": 0.0, "unit": "gram (g)"}]
 
     rows_to_remove = []
+    ingredient_options = ["(Pilih bahan)"] + raw_ingredients
+
     for i, row in enumerate(st.session_state["sf_rows"]):
         rc1, rc2, rc3, rc4 = st.columns([3, 1, 1, 0.5])
         with rc1:
-            row["name"] = st.text_input(f"Bahan #{i+1}", value=row["name"], key=f"sf_row_name_{i}", placeholder="Contoh: Bawang Merah")
+            current_idx = ingredient_options.index(row["name"]) if row["name"] in ingredient_options else 0
+            selected = st.selectbox(
+                f"Bahan #{i+1}",
+                options=ingredient_options,
+                index=current_idx,
+                key=f"sf_row_name_{i}"
+            )
+            row["name"] = selected if selected != "(Pilih bahan)" else ""
+            # Auto-set satuan dari data Moka saat bahan baru dipilih
+            if row["name"]:
+                row["unit"] = _get_unit_for_ingredient(row["name"])
         with rc2:
             row["qty"] = st.number_input("Qty", min_value=0.0, value=row["qty"], step=1.0, key=f"sf_row_qty_{i}")
         with rc3:
-            row["unit"] = st.selectbox("Satuan", UNIT_OPTIONS, index=UNIT_OPTIONS.index(row["unit"]) if row["unit"] in UNIT_OPTIONS else 0, key=f"sf_row_unit_{i}")
+            unit_idx = UNIT_OPTIONS.index(row["unit"]) if row["unit"] in UNIT_OPTIONS else 0
+            row["unit"] = st.selectbox("Satuan", UNIT_OPTIONS, index=unit_idx, key=f"sf_row_unit_{i}")
         with rc4:
             st.write("")
             if st.button("🗑", key=f"sf_row_del_{i}"):
@@ -96,13 +134,12 @@ def show():
         elif batch_qty <= 0:
             st.error("Hasil 1 batch harus lebih dari 0.")
         elif not valid_rows:
-            st.error("Minimal harus ada 1 bahan mentah dengan qty > 0.")
+            st.error("Minimal harus ada 1 bahan mentah dengan qty > 0 dan sudah dipilih dari dropdown.")
         else:
             con = get_connection()
-            # Hapus resep lama untuk semi-finished ini (replace, bukan tambah)
             con.execute("DELETE FROM fact_semi_finished_recipe WHERE semi_finished_name = ?", [final_sf_name])
             for r in valid_rows:
-                sf_id = _next_sf_id_inline(con)
+                sf_id = con.execute("SELECT nextval('seq_sf')").fetchone()[0]
                 con.execute("""
                     INSERT INTO fact_semi_finished_recipe
                     (sf_id, semi_finished_name, batch_yield_qty, batch_yield_unit,
@@ -115,7 +152,6 @@ def show():
             st.success(f"Resep turunan '{final_sf_name}' berhasil disimpan ({len(valid_rows)} bahan).")
             st.session_state["sf_rows"] = [{"name": "", "qty": 0.0, "unit": "gram (g)"}]
 
-            # Auto-upload ke GDrive jika tersedia
             try:
                 from utils.gdrive_loader import upload_to_gdrive
                 with st.spinner("☁️ Menyimpan ke Google Drive..."):
@@ -129,7 +165,6 @@ def show():
 
     st.divider()
 
-    # ── Daftar resep turunan yang sudah tersimpan ─────────────────
     st.subheader("Resep turunan tersimpan")
 
     df_sf = run_query("""
@@ -169,7 +204,3 @@ def show():
         "menghitung konsumsi bahan mentah secara proporsional berdasarkan resep turunan di atas. "
         "Lihat hasilnya di menu Inventori Bahan."
     )
-
-
-def _next_sf_id_inline(con):
-    return con.execute("SELECT nextval('seq_sf')").fetchone()[0]
