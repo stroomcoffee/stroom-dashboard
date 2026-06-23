@@ -9,11 +9,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-from utils.database import init_database, ensure_adjustment_table, create_stock_view, run_query
+from utils.database import (
+    init_database, ensure_adjustment_table, ensure_semi_finished_table,
+    create_stock_view, run_query
+)
 from utils.style import inject_css
+
 inject_css()
 init_database()
 ensure_adjustment_table()
+ensure_semi_finished_table()
 create_stock_view()
 
 if "active_page" not in st.session_state:
@@ -43,6 +48,7 @@ with st.sidebar:
         "💰 Transaksi Penjualan",
         "🧾 Konsumsi Bahan",
         "🍳 Resep & BOM",
+        "🧪 Resep Turunan",
         "📈 Analitik Lanjutan",
     ]
 
@@ -91,5 +97,7 @@ elif page == "Konsumsi Bahan":
     from page_modules import konsumsi_bahan; konsumsi_bahan.show()
 elif page == "Resep & BOM":
     from page_modules import resep; resep.show()
+elif page == "Resep Turunan":
+    from page_modules import semi_finished; semi_finished.show()
 elif page == "Analitik Lanjutan":
     from page_modules import analitik; analitik.show()
