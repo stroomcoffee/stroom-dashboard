@@ -1,13 +1,142 @@
-# ============================================================
-# TAMBAHAN UNTUK utils/database.py
-# ============================================================
-# 1. Tempel fungsi ensure_semi_finished_table() ini di utils/database.py
-#    (letakkan dekat fungsi ensure_adjustment_table())
-# 2. Panggil ensure_semi_finished_table() di app.py, sejajar dengan
-#    ensure_adjustment_table() yang sudah ada
-# 3. REPLACE seluruh fungsi create_stock_view() yang lama dengan
-#    versi baru di bagian bawah file ini
-# ============================================================
+import duckdb
+import pandas as pd
+import streamlit as st
+from pathlib import Path
+
+DB_PATH = str(Path(__file__).parent.parent / "stroom_inventory.duckdb")
+
+
+def get_connection():
+    """Buka koneksi baru ke database DuckDB."""
+    return duckdb.connect(DB_PATH)
+
+
+def run_query(sql: str, params: list = None) -> pd.DataFrame:
+    """Jalankan query SELECT dan kembalikan hasilnya sebagai DataFrame."""
+    con = get_connection()
+    try:
+        if params:
+            result = con.execute(sql, params).df()
+        else:
+            result = con.execute(sql).df()
+    finally:
+        con.close()
+    return result
+
+
+def init_database():
+    """
+    Inisialisasi tabel-tabel utama jika belum ada.
+    Dipanggil sekali setiap app start.
+    """
+    con = get_connection()
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fact_sales_detail (
+            sale_id INTEGER,
+            sale_date DATE,
+            sale_time VARCHAR,
+            receipt_number VARCHAR,
+            item_name VARCHAR,
+            category VARCHAR,
+            sales_type VARCHAR,
+            payment_method VARCHAR,
+            quantity DOUBLE,
+            gross_sales DOUBLE,
+            discounts DOUBLE,
+            net_sales DOUBLE,
+            outlet_name VARCHAR,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fact_invoice (
+            invoice_id INTEGER,
+            inv_date DATE,
+            invoice_number VARCHAR,
+            item_name VARCHAR,
+            category VARCHAR,
+            quantity DOUBLE,
+            gross_sales DOUBLE,
+            net_sales DOUBLE,
+            outlet_name VARCHAR,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fact_purchase_order (
+            po_id INTEGER,
+            order_no VARCHAR,
+            po_date DATE,
+            ingredient_name VARCHAR,
+            order_qty DOUBLE,
+            in_stock DOUBLE,
+            unit VARCHAR,
+            category VARCHAR,
+            total_cost DOUBLE,
+            status VARCHAR,
+            outlet_name VARCHAR,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fact_recipe (
+            recipe_id INTEGER,
+            item_name VARCHAR,
+            variant_name VARCHAR,
+            ingredient_name VARCHAR,
+            ingredient_qty DOUBLE,
+            ingredient_unit VARCHAR,
+            stock_alert VARCHAR,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS import_log (
+            log_id INTEGER,
+            file_type VARCHAR,
+            file_name VARCHAR,
+            rows_inserted INTEGER,
+            rows_updated INTEGER,
+            status VARCHAR,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    con.execute("CREATE SEQUENCE IF NOT EXISTS seq_sale START 1")
+    con.execute("CREATE SEQUENCE IF NOT EXISTS seq_invoice START 1")
+    con.execute("CREATE SEQUENCE IF NOT EXISTS seq_po START 1")
+    con.execute("CREATE SEQUENCE IF NOT EXISTS seq_recipe START 1")
+    con.execute("CREATE SEQUENCE IF NOT EXISTS seq_log START 1")
+
+    con.commit()
+    con.close()
+
+
+def ensure_adjustment_table():
+    """Buat tabel fact_adjustment jika belum ada."""
+    con = get_connection()
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fact_adjustment (
+            adj_id INTEGER PRIMARY KEY,
+            ingredient_name VARCHAR,
+            adj_date TIMESTAMP,
+            actual_stock DOUBLE,
+            in_stock DOUBLE,
+            adjustment DOUBLE,
+            unit VARCHAR,
+            note VARCHAR,
+            outlet_name VARCHAR,
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    con.execute("CREATE SEQUENCE IF NOT EXISTS seq_adj START 1")
+    con.commit()
+    con.close()
 
 
 def ensure_semi_finished_table():
@@ -22,12 +151,12 @@ def ensure_semi_finished_table():
     con.execute("""
         CREATE TABLE IF NOT EXISTS fact_semi_finished_recipe (
             sf_id INTEGER PRIMARY KEY,
-            semi_finished_name VARCHAR,   -- contoh: 'Bumbu Base XO'
-            batch_yield_qty DOUBLE,       -- contoh: 2000
-            batch_yield_unit VARCHAR,     -- contoh: 'gram (g)'
-            raw_ingredient_name VARCHAR,  -- contoh: 'Bawang Merah'
-            raw_qty DOUBLE,               -- contoh: 250
-            raw_unit VARCHAR,             -- contoh: 'gram (g)'
+            semi_finished_name VARCHAR,
+            batch_yield_qty DOUBLE,
+            batch_yield_unit VARCHAR,
+            raw_ingredient_name VARCHAR,
+            raw_qty DOUBLE,
+            raw_unit VARCHAR,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -35,10 +164,6 @@ def ensure_semi_finished_table():
     con.commit()
     con.close()
 
-
-# ============================================================
-# REPLACE create_stock_view() YANG LAMA DENGAN INI
-# ============================================================
 
 def create_stock_view():
     """
@@ -48,8 +173,8 @@ def create_stock_view():
       1. Adjustment terakhir per bahan = titik awal
       2. + PO Completed yang masuk SETELAH adjustment terakhir
       3. - Konsumsi penjualan SETELAH adjustment terakhir, dihitung 2 cara:
-         a. Konsumsi LANGSUNG — bahan dipakai langsung di resep menu
-         b. Konsumsi TIDAK LANGSUNG — bahan dipakai sebagai komponen
+         a. Konsumsi LANGSUNG - bahan dipakai langsung di resep menu
+         b. Konsumsi TIDAK LANGSUNG - bahan dipakai sebagai komponen
             Semi-Finished Ingredient, yang Semi-Finished itu sendiri
             dipakai di resep menu (fact_semi_finished_recipe)
     """
@@ -99,7 +224,6 @@ def create_stock_view():
               AND p.status = 'Completed'
             GROUP BY p.ingredient_name
         ),
-        -- (a) Konsumsi LANGSUNG: bahan dipakai langsung di resep menu
         konsumsi_langsung AS (
             SELECT r.ingredient_name,
                    SUM(s.quantity * r.ingredient_qty) AS total_konsumsi
@@ -111,16 +235,14 @@ def create_stock_view():
               AND r.ingredient_qty > 0
             GROUP BY r.ingredient_name
         ),
-        -- (b) Konsumsi TIDAK LANGSUNG: lewat Semi-Finished Ingredient
-        --     menu -> semi-finished -> raw material
         konsumsi_via_semi_finished AS (
             SELECT
                 sf.raw_ingredient_name AS ingredient_name,
                 SUM(
-                    s.quantity                         -- qty menu terjual
-                    * r.ingredient_qty                 -- gram semi-finished per porsi menu
-                    / sf.batch_yield_qty                -- dibagi hasil 1 batch semi-finished
-                    * sf.raw_qty                        -- dikali qty raw material per batch
+                    s.quantity
+                    * r.ingredient_qty
+                    / sf.batch_yield_qty
+                    * sf.raw_qty
                 ) AS total_konsumsi
             FROM fact_sales_detail s
             JOIN fact_recipe r
@@ -135,7 +257,6 @@ def create_stock_view():
               AND sf.batch_yield_qty > 0
             GROUP BY sf.raw_ingredient_name
         ),
-        -- Gabungkan konsumsi langsung + tidak langsung per bahan
         konsumsi_total AS (
             SELECT ingredient_name, SUM(total_konsumsi) AS total_konsumsi
             FROM (
